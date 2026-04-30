@@ -1,0 +1,47 @@
+bind_addresses:
+  - 127.0.0.1
+
+port: 7880
+log_level: info
+prometheus_port: 6789
+
+redis:
+  address: 127.0.0.1:6379
+
+rtc:
+  # Single-port UDP mux keeps first-pass firewalling simple on one box.
+  # If you later need more media capacity, switch to a wider UDP range.
+  tcp_port: 7881
+  udp_port: 7882
+  use_external_ip: true
+  # Apache often already owns :443 on a single-IP host, so phase 1 keeps
+  # encrypted TURN on :5349 unless you dedicate :443 to TURN later.
+  turn_servers:
+    - host: turn.example.com
+      port: 3478
+      protocol: udp
+      secret: replace-with-a-long-random-turn-shared-secret
+      ttl: 86400
+    - host: turn.example.com
+      port: 3478
+      protocol: tcp
+      secret: replace-with-a-long-random-turn-shared-secret
+      ttl: 86400
+    - host: turn.example.com
+      port: 5349
+      protocol: tls
+      secret: replace-with-a-long-random-turn-shared-secret
+      ttl: 86400
+
+keys:
+  replace-me-livekit-api-key: replace-with-a-long-random-secret
+
+webhook:
+  # Keep this aligned with one of the values under keys: above.
+  api_key: replace-me-livekit-api-key
+  urls:
+    - http://127.0.0.1:3000/livekit/webhook
+
+# This file is a checked-in reference only.
+# The running stack now builds the equivalent LiveKit config from `.env`
+# via `docker-compose.yml`, so real domains and secrets stay out of git.

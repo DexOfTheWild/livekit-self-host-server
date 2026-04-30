@@ -1,0 +1,7 @@
+.env
+.env.local
+livekit.yaml
+docker-compose.override.yml
+data/
+config/
+*.log

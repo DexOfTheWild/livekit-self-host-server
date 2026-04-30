@@ -1,0 +1,164 @@
+x-json-logging: &json-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
+services:
+  caddy:
+    image: caddy:${CADDY_IMAGE_TAG:-2-alpine}
+    profiles: ["caddy-edge"]
+    restart: unless-stopped
+    network_mode: host
+    depends_on:
+      - livekit
+    environment:
+      LIVEKIT_DOMAIN: ${LIVEKIT_DOMAIN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./data/caddy:/data
+      - ./config/caddy:/config
+    logging: *json-logging
+
+  redis:
+    image: redis:${REDIS_IMAGE_TAG:-7-alpine}
+    restart: unless-stopped
+    network_mode: host
+    command:
+      - redis-server
+      - --bind
+      - 127.0.0.1
+      - --port
+      - "6379"
+      - --appendonly
+      - "yes"
+      - --protected-mode
+      - "yes"
+    volumes:
+      - ./data/redis:/data
+    logging: *json-logging
+
+  livekit:
+    image: livekit/livekit-server:${LIVEKIT_IMAGE_TAG:-latest}
+    restart: unless-stopped
+    network_mode: host
+    depends_on:
+      - redis
+    environment:
+      LIVEKIT_CONFIG: |
+        bind_addresses:
+          - 127.0.0.1
+        port: 7880
+        log_level: info
+        prometheus_port: 6789
+        redis:
+          address: 127.0.0.1:6379
+        rtc:
+          # Single-port UDP mux keeps first-pass firewalling simple on one box.
+          # If you later need more media capacity, switch to a wider UDP range.
+          tcp_port: 7881
+          udp_port: 7882
+          use_external_ip: true
+          # Apache often already owns :443 on a single-IP host, so phase 1 keeps
+          # encrypted TURN on :5349 unless you dedicate :443 to TURN later.
+          turn_servers:
+            - host: "${TURN_DOMAIN}"
+              port: ${TURN_LISTEN_PORT:-3478}
+              protocol: udp
+              secret: "${TURN_SHARED_SECRET}"
+              ttl: 86400
+            - host: "${TURN_DOMAIN}"
+              port: ${TURN_LISTEN_PORT:-3478}
+              protocol: tcp
+              secret: "${TURN_SHARED_SECRET}"
+              ttl: 86400
+            - host: "${TURN_DOMAIN}"
+              port: ${TURN_TLS_PORT:-5349}
+              protocol: tls
+              secret: "${TURN_SHARED_SECRET}"
+              ttl: 86400
+        keys:
+          "${LIVEKIT_API_KEY}": "${LIVEKIT_API_SECRET}"
+        webhook:
+          # Keep this aligned with one of the values under keys: above.
+          api_key: "${LIVEKIT_API_KEY}"
+          urls:
+            - http://127.0.0.1:3000/livekit/webhook
+    logging: *json-logging
+
+  coturn:
+    image: coturn/coturn:${TURN_IMAGE_TAG:-latest}
+    restart: unless-stopped
+    network_mode: host
+    user: "0:0"
+    command:
+      - -n
+      - --log-file=stdout
+      - --realm=${TURN_DOMAIN}
+      - --server-name=${TURN_DOMAIN}
+      - --listening-port=${TURN_LISTEN_PORT:-3478}
+      - --tls-listening-port=${TURN_TLS_PORT:-5349}
+      - --listening-ip=${TURN_PUBLIC_IP}
+      - --relay-ip=${TURN_PUBLIC_IP}
+      - --external-ip=${TURN_PUBLIC_IP}
+      - --min-port=${TURN_MIN_RELAY_PORT:-49160}
+      - --max-port=${TURN_MAX_RELAY_PORT:-49259}
+      - --fingerprint
+      - --use-auth-secret
+      - --static-auth-secret=${TURN_SHARED_SECRET}
+      - --cert=${TURN_CERT_FULLCHAIN_FILE}
+      - --pkey=${TURN_CERT_PRIVKEY_FILE}
+      - --prometheus
+      - --prometheus-address=127.0.0.1
+      - --prometheus-port=9641
+      - --no-multicast-peers
+    volumes:
+      - /etc/letsencrypt:/etc/letsencrypt:ro
+    logging: *json-logging
+
+  node-exporter:
+    image: prom/node-exporter:${NODE_EXPORTER_IMAGE_TAG:-v1.8.1}
+    restart: unless-stopped
+    network_mode: host
+    pid: host
+    command:
+      - --path.rootfs=/host
+      - --path.procfs=/host/proc
+      - --path.sysfs=/host/sys
+      - --collector.filesystem.mount-points-exclude=^/(dev|proc|sys|run/credentials/.+|var/lib/docker/.+)($|/)
+      - --web.listen-address=127.0.0.1:9100
+    volumes:
+      - /:/host:ro,rslave
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+    logging: *json-logging
+
+  redis-exporter:
+    image: oliver006/redis_exporter:${REDIS_EXPORTER_IMAGE_TAG:-v1.62.0}
+    restart: unless-stopped
+    network_mode: host
+    depends_on:
+      - redis
+    command:
+      - --redis.addr=redis://127.0.0.1:6379
+      - --web.listen-address=127.0.0.1:9121
+    logging: *json-logging
+
+  prometheus:
+    image: prom/prometheus:${PROMETHEUS_IMAGE_TAG:-v2.53.0}
+    restart: unless-stopped
+    network_mode: host
+    user: "0:0"
+    depends_on:
+      - livekit
+      - redis-exporter
+      - node-exporter
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=7d
+      - --web.listen-address=127.0.0.1:9090
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./data/prometheus:/prometheus
+    logging: *json-logging
